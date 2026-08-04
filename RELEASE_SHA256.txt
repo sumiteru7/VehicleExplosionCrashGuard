@@ -1,0 +1,8 @@
+VehicleExplosionCrashGuard_v1.0.zip
+SHA-256: 137b757976140fb4897c059b2120dfb8042af6ec12eaeb401a8548abedf906d7
+
+red4ext/plugins/VehicleExplosionCrashGuard/VehicleExplosionCrashGuard.dll
+SHA-256: 55b9d60d818ef18c9116c35ca0502b523856985645d4a913974a1914e17e9b9d
+
+red4ext/plugins/VehicleExplosionCrashGuard/README.md
+SHA-256: 55076a92c1fc39f23e4ce94828ece6f4648fdd935fed2c1ef526eeabf343eb90
