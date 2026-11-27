@@ -1,3 +1,13 @@
+# v1.2.0-beta.1 (2026-11-27)
+
+- Added Guard C for an additional Patch 2.5 crash.
+
+# v1.1.0-alpha.1 (2026-11-22)
+
+- Added support for Cyberpunk 2077 Patch 2.5.
+
+## Previous history
+
 # Changelog
 
 ## v1.0.0 — 2026-08-04

@@ -19,9 +19,11 @@ namespace
 {
 safetyhook::MidHook s_guardAHook{};
 safetyhook::MidHook s_guardBHook{};
+safetyhook::MidHook s_guardCHook{};
 
 std::uintptr_t s_guardASafeResume = 0;
 std::uintptr_t s_guardBSafeResume = 0;
+std::uintptr_t s_guardCSafeResume = 0;
 
 struct AddressRange
 {
@@ -237,7 +239,7 @@ bool InitializeGuardBSectionRanges(const std::uint8_t* aModuleBase,
         {
             bool containsObservedVtable = false;
             for (const std::uintptr_t vtableRva :
-                 vecg::target::guard_b::kObservedValidVtableRvas)
+                 vecg::target::guard_b::kVtableSectionAnchorRvas)
             {
                 if (sectionSize >= sizeof(std::uintptr_t) * 2 &&
                     vtableRva >= sectionRva &&
@@ -276,7 +278,7 @@ bool InitializeGuardBSectionRanges(const std::uint8_t* aModuleBase,
     }
 
     for (const std::uintptr_t vtableRva :
-         vecg::target::guard_b::kObservedValidVtableRvas)
+         vecg::target::guard_b::kVtableSectionAnchorRvas)
     {
         if (!ContainsRange(s_guardBVtableRanges,
                            s_guardBVtableRangeCount,
@@ -352,7 +354,7 @@ void OnGuardA(safetyhook::Context& aContext) noexcept
     vecg::diag::RecordGuardAHit();
 
     // At this point [rsp+0x20] and [rsp+0x28] were already zeroed by native
-    // code. 0x72F374 is the game's own continuation for an empty reference.
+    // code. 0x58D5A8 is the game's own continuation for an empty reference.
     aContext.rip = s_guardASafeResume;
 }
 
@@ -369,8 +371,9 @@ void OnGuardB(safetyhook::Context& aContext) noexcept
                                 aContext.rax,
                                 validation.target);
 
-    // SafetyHook v0.7.0 replaces both call qword ptr [rax+8] and the
-    // following add rsp,50h. Context::rsp is read-only, so reproduce the
+    // SafetyHook v0.7.0 relocates only the six-byte movdqa preceding
+    // call [rax+8], preserving both native early-return branches.
+    // Context::rsp is read-only, so retain the proven
     // cleanup through trampoline_rsp: stage the intact pop-rbx address at
     // [original_rsp+0x48]. The mid-hook stub's final ret consumes that address,
     // leaving the real RSP at original_rsp+0x50 before execution reaches pop rbx.
@@ -382,6 +385,28 @@ void OnGuardB(safetyhook::Context& aContext) noexcept
 
     aContext.trampoline_rsp = resumeAddressSlot;
     aContext.rip = s_guardBSafeResume;
+}
+// Guard C by Gustavo Kimura (KimuraDev), PR #1. Callback retained verbatim.
+void OnGuardC(safetyhook::Context& aContext) noexcept
+{
+    // Normal case: rcx is a valid heap/stack pointer in 64-bit user space (>= 64 KB).
+    if (aContext.rcx >= 0x10000)
+    {
+        return;
+    }
+
+    // Invalid/null-offset context pointer (e.g. 0x164).
+    vecg::diag::RecordGuardCHit(aContext.rcx, aContext.rbx);
+
+    // rbx points to the destination reference struct.
+    // Zero out the pointer to make it a safe, valid empty reference.
+    if (aContext.rbx >= 0x10000)
+    {
+        *reinterpret_cast<std::uintptr_t*>(aContext.rbx) = 0;
+    }
+
+    // Skip the crashing call to 0x22CA420 and jump directly to the epilogue at 0x1FFADB4.
+    aContext.rip = s_guardCSafeResume;
 }
 } // namespace
 
@@ -451,7 +476,22 @@ bool InstallCrashGuards() noexcept
                     s_guardBSafeResume = reinterpret_cast<std::uintptr_t>(moduleBase) +
                                          target::guard_b::kSafeResumeRva;
                     s_guardBHook = safetyhook::create_mid(moduleBase + target::guard_b::kHookRva,
-                                                          OnGuardB);
+                                                          OnGuardB,
+                                                          safetyhook::MidHook::StartDisabled);
+                    // Validate the relocation footprint before patching executable code.
+                    // Native branches enter the epilogue immediately after the call.
+                    if (s_guardBHook)
+                    {
+                        if (s_guardBHook.original_bytes().size() != 6)
+                        {
+                            diag::Error("Guard B hook: unexpected overwrite size; disabled");
+                            s_guardBHook.reset();
+                        }
+                        else if (!s_guardBHook.enable())
+                        {
+                            s_guardBHook.reset();
+                        }
+                    }
                     status.guardBHookInstalled = static_cast<bool>(s_guardBHook);
 
                     if (status.guardBHookInstalled)
@@ -468,14 +508,61 @@ bool InstallCrashGuards() noexcept
                     }
                 }
             }
+            status.guardCSignatureMatched = ValidateSignature(
+                moduleBase,
+                ntHeaders,
+                target::guard_c::kName,
+                target::guard_c::kSignatureRva,
+                target::guard_c::kSignature);
+
+            if (status.guardCSignatureMatched)
+            {
+                s_guardCSafeResume = reinterpret_cast<std::uintptr_t>(moduleBase) +
+                                     target::guard_c::kSafeResumeRva;
+                s_guardCHook = safetyhook::create_mid(moduleBase + target::guard_c::kHookRva,
+                                                      OnGuardC,
+                                                      safetyhook::MidHook::StartDisabled);
+                // The safe resume is immediately after the five-byte call.
+                // Refuse any larger relocation before writing executable code.
+                if (s_guardCHook)
+                {
+                    if (s_guardCHook.original_bytes().size() != 5)
+                    {
+                        diag::Error("Guard C hook: unexpected overwrite size; disabled");
+                        s_guardCHook.reset();
+                    }
+                    else if (!s_guardCHook.enable())
+                    {
+                        s_guardCHook.reset();
+                    }
+                }
+                status.guardCHookInstalled = static_cast<bool>(s_guardCHook);
+
+                if (status.guardCHookInstalled)
+                {
+                    diag::Info("Guard C hook: installed at RVA " +
+                               Hex(target::guard_c::kHookRva, 8) +
+                               ", safe resume RVA " +
+                               Hex(target::guard_c::kSafeResumeRva, 8));
+                }
+                else
+                {
+                    s_guardCSafeResume = 0;
+                    diag::Error("Guard C hook: installation failed");
+                }
+            }
         }
         else
         {
-            diag::Warning("Both guards remain inactive in fail-closed mode");
+            diag::Warning("Guards remain inactive in fail-closed mode");
         }
     }
     catch (...)
     {
+        if (s_guardCHook)
+        {
+            s_guardCHook.reset();
+        }
         if (s_guardBHook)
         {
             s_guardBHook.reset();
@@ -487,10 +574,12 @@ bool InstallCrashGuards() noexcept
 
         s_guardASafeResume = 0;
         s_guardBSafeResume = 0;
+        s_guardCSafeResume = 0;
         s_guardBVtableRangeCount = 0;
         s_guardBExecutableRangeCount = 0;
         status.guardAHookInstalled = false;
         status.guardBHookInstalled = false;
+        status.guardCHookInstalled = false;
         diag::Error("Unexpected initialization failure; no uncertain hook remains installed");
     }
 
@@ -502,7 +591,9 @@ bool InstallCrashGuards() noexcept
     diag::Info("Initialization complete: Guard A installed=" +
                std::string(status.guardAHookInstalled ? "yes" : "no") +
                ", Guard B installed=" +
-               std::string(status.guardBHookInstalled ? "yes" : "no"));
+               std::string(status.guardBHookInstalled ? "yes" : "no") +
+               ", Guard C installed=" +
+               std::string(status.guardCHookInstalled ? "yes" : "no"));
 
     // Fail-closed errors disable only the affected guard and never block startup.
     return true;
@@ -514,6 +605,10 @@ void RemoveCrashGuards() noexcept
     {
         // Remove hooks before closing the monitor event so no callback can signal
         // an already-destroyed handle.
+        if (s_guardCHook)
+        {
+            s_guardCHook.reset();
+        }
         if (s_guardBHook)
         {
             s_guardBHook.reset();
@@ -526,7 +621,9 @@ void RemoveCrashGuards() noexcept
         diag::Info("Removing guards. Guard A redirects=" +
                    std::to_string(diag::GuardAHits()) +
                    ", Guard B redirects=" +
-                   std::to_string(diag::GuardBHits()));
+                   std::to_string(diag::GuardBHits()) +
+                   ", Guard C redirects=" +
+                   std::to_string(diag::GuardCHits()));
         diag::StopMonitor();
     }
     catch (...)
@@ -536,6 +633,7 @@ void RemoveCrashGuards() noexcept
 
     s_guardASafeResume = 0;
     s_guardBSafeResume = 0;
+    s_guardCSafeResume = 0;
     s_guardBVtableRangeCount = 0;
     s_guardBExecutableRangeCount = 0;
 }
