@@ -9,22 +9,17 @@ namespace vecg::target
 inline constexpr wchar_t kPluginName[] = L"VehicleExplosionCrashGuard";
 inline constexpr wchar_t kAuthor[] = L"Junki & Sophia";
 
-// Cyberpunk 2077 PC 2.31
-// InternalVersion: 3.0.5294808
-// P4CL: 9778208
-inline constexpr std::uint32_t kPeTimeDateStamp = 0x68AF45EA;
-inline constexpr std::uint32_t kSizeOfImage = 0x04EFC000;
+// Cyberpunk 2077 PC 2.5 (Build 5813403, P4CL 13555055)
+inline constexpr std::uint32_t kPeTimeDateStamp = 0x6AD55DAF;
+inline constexpr std::uint32_t kSizeOfImage = 0x0581B000;
 
 namespace guard_a
 {
 inline constexpr char kName[] = "Guard A";
-inline constexpr std::uintptr_t kSignatureRva = 0x72F311;
-inline constexpr std::uintptr_t kHookRva = 0x72F346;
-inline constexpr std::uintptr_t kSafeResumeRva = 0x72F374;
+inline constexpr std::uintptr_t kSignatureRva = 0x0058D545;
+inline constexpr std::uintptr_t kHookRva = 0x0058D57A;
+inline constexpr std::uintptr_t kSafeResumeRva = 0x0058D5A8;
 
-// Exact bytes from Cyberpunk2077.exe 2.31, RVA 0x72F311..0x72F38C.
-// Covers r8=[rdi+0x50], local empty-reference initialization, the crashing
-// mov rax,[r8+0x10], and the native empty-reference continuation.
 inline constexpr std::array<std::uint8_t, 124> kSignature{
     0x4C, 0x8B, 0x47, 0x50, 0xF3, 0x0F, 0x10, 0x8F, 0x7C, 0x01, 0x00, 0x00,
     0xF3, 0x0F, 0x11, 0x85, 0x10, 0x01, 0x00, 0x00, 0xF3, 0x0F, 0x10, 0x87,
@@ -53,37 +48,25 @@ static_assert(kSignature[kHookOffset + 3] == 0x10);
 namespace guard_b
 {
 inline constexpr char kName[] = "Guard B";
-inline constexpr std::uintptr_t kSignatureRva = 0x2A3831;
-inline constexpr std::uintptr_t kHookRva = 0x2A38A1;
-inline constexpr std::uintptr_t kSafeResumeRva = 0x2A38A8;
+inline constexpr std::uintptr_t kSignatureRva = 0x005C2CE5;
+inline constexpr std::uintptr_t kHookRva = 0x005C2D4F;
+inline constexpr std::uintptr_t kSafeResumeRva = 0x005C2D5C;
 inline constexpr std::uintptr_t kStackCleanupSize = 0x50;
 inline constexpr std::uintptr_t kDescriptorStackOffset = 0x20;
 inline constexpr std::uintptr_t kOutputStackOffset = 0x30;
 inline constexpr std::uintptr_t kResumeAddressSlotOffset =
     kStackCleanupSize - sizeof(std::uintptr_t);
 
-// Unique valid vtable RVAs observed by the temporary v0.2.2 diagnostic build.
-// These anchors identify the loaded PE section used by legitimate Guard B vtables;
-// they are not a per-target allowlist.
-inline constexpr std::array<std::uintptr_t, 7> kObservedValidVtableRvas{
-    0x02C7EEE0,
-    0x02B114F0,
-    0x02C94B40,
-    0x02AD8C88,
-    0x02ADDE98,
-    0x02B0AAA8,
-    0x02B0A4F8,
+// Anchor inside Cyberpunk 2077 2.5 .rdata (0x02FF3000..0x0390299A)
+inline constexpr std::array<std::uintptr_t, 2> kObservedValidVtableRvas{
+    0x03000000,
+    0x03500000,
 };
 
-// Exact bytes recovered from the fourth DMP, RVA 0x2A3831..0x2A38A9.
-// The native path at 0x2A3838 branches to the early-return epilogue at
-// 0x2A38A4. SafetyHook v0.7.0 overwrites the 7 bytes at 0x2A38A1..0x2A38A7
-// (call [rax+8] + add rsp,50h), so Guard B reproduces the stack cleanup in
-// its callback and resumes at the first intact instruction, pop rbx at 0x2A38A8.
 inline constexpr std::array<std::uint8_t, 121> kSignature{
     0xE8, 0x76, 0x00, 0x00, 0x00, 0x84, 0xC0, 0x75, 0x6A, 0x48, 0x8B, 0x05,
-    0x0F, 0x42, 0x1C, 0x03, 0x4C, 0x8D, 0x44, 0x24, 0x30, 0x0F, 0x28, 0x05,
-    0x33, 0xD6, 0xF4, 0x02, 0x83, 0x64, 0x24, 0x30, 0x00, 0x83, 0x64, 0x24,
+    0xDB, 0xA0, 0x63, 0x03, 0x4C, 0x8D, 0x44, 0x24, 0x30, 0x0F, 0x28, 0x05,
+    0x9F, 0x8A, 0x1F, 0x03, 0x83, 0x64, 0x24, 0x30, 0x00, 0x83, 0x64, 0x24,
     0x34, 0x00, 0x83, 0x64, 0x24, 0x38, 0x00, 0x0F, 0xB7, 0xCB, 0x0F, 0x29,
     0x44, 0x24, 0x40, 0x4C, 0x8B, 0x8C, 0xC8, 0x18, 0x20, 0x22, 0x00, 0x48,
     0x8B, 0x8C, 0xC8, 0x18, 0x20, 0x1A, 0x00, 0x48, 0x8B, 0x01, 0x8B, 0x51,
@@ -97,13 +80,42 @@ inline constexpr std::array<std::uint8_t, 121> kSignature{
 inline constexpr std::size_t kHookOffset = kHookRva - kSignatureRva;
 inline constexpr std::size_t kSafeResumeOffset = kSafeResumeRva - kSignatureRva;
 
-static_assert(kHookOffset == 0x70);
+static_assert(kHookOffset == 0x6A);
 static_assert(kSafeResumeOffset == 0x77);
 static_assert(kResumeAddressSlotOffset == 0x48);
-static_assert(kSignature[kHookOffset + 0] == 0xFF);
-static_assert(kSignature[kHookOffset + 1] == 0x50);
-static_assert(kSignature[kHookOffset + 2] == 0x08);
+static_assert(kSignature[kHookOffset + 0] == 0x66);
+static_assert(kSignature[kHookOffset + 1] == 0x0F);
+static_assert(kSignature[kHookOffset + 2] == 0x7F);
 static_assert(kSignature[kSafeResumeOffset + 0] == 0x5B);
 static_assert(kSignature[kSafeResumeOffset + 1] == 0xC3);
 } // namespace guard_b
+
+namespace guard_c
+{
+inline constexpr char kName[] = "Guard C";
+inline constexpr std::uintptr_t kSignatureRva = 0x1FFADA6;
+inline constexpr std::uintptr_t kHookRva = 0x1FFADAF;
+inline constexpr std::uintptr_t kSafeResumeRva = 0x1FFADB4;
+
+inline constexpr std::array<std::uint8_t, 23> kSignature{
+    0x48, 0x8B, 0xD9,
+    0x48, 0x89, 0x11,
+    0x48, 0x8B, 0xCA,
+    0xE8, 0x6C, 0xF6, 0x2C, 0x00,
+    0x48, 0x8B, 0xC3,
+    0x48, 0x83, 0xC4, 0x20,
+    0x5B,
+    0xC3,
+};
+
+inline constexpr std::size_t kHookOffset = kHookRva - kSignatureRva;
+inline constexpr std::size_t kSafeResumeOffset = kSafeResumeRva - kSignatureRva;
+
+static_assert(kHookOffset == 9);
+static_assert(kSafeResumeOffset == 14);
+static_assert(kSignature[kHookOffset + 0] == 0xE8);
+static_assert(kSignature[kSafeResumeOffset + 0] == 0x48);
+static_assert(kSignature[kSafeResumeOffset + 1] == 0x8B);
+static_assert(kSignature[kSafeResumeOffset + 2] == 0xC3);
+} // namespace guard_c
 } // namespace vecg::target

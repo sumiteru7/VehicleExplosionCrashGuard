@@ -17,10 +17,15 @@ const RED4ext::v1::Logger* s_logger = nullptr;
 
 std::atomic<std::uint64_t> s_guardAHits{0};
 std::atomic<std::uint64_t> s_guardBHits{0};
+std::atomic<std::uint64_t> s_guardCHits{0};
+
 std::atomic<std::uint32_t> s_lastGuardBReason{0};
 std::atomic<std::uint64_t> s_lastGuardBObject{0};
 std::atomic<std::uint64_t> s_lastGuardBVtable{0};
 std::atomic<std::uint64_t> s_lastGuardBTarget{0};
+
+std::atomic<std::uint64_t> s_lastGuardCBadPtr{0};
+std::atomic<std::uint64_t> s_lastGuardCDestPtr{0};
 
 std::atomic<HANDLE> s_activityEvent{nullptr};
 std::jthread s_monitorThread{};
@@ -83,7 +88,6 @@ std::filesystem::path DedicatedLogPath()
         return {};
     }
 
-    // <game>/bin/x64/Cyberpunk2077.exe -> <game>/red4ext/logs
     const auto gameRoot = std::filesystem::path(executablePath)
                               .parent_path()
                               .parent_path()
@@ -128,12 +132,14 @@ void MonitorMain(std::stop_token aStopToken, vecg::diag::StartupStatus aStatus) 
 
         if (file)
         {
-            WriteLine(file, "INFO", "VehicleExplosionCrashGuard v1.0 diagnostic session started.");
+            WriteLine(file, "INFO", "VehicleExplosionCrashGuard diagnostic session started.");
             WriteLine(file, "INFO", std::string("Build guard passed=") + YesNo(aStatus.buildGuardPassed) + '.');
             WriteLine(file, "INFO", std::string("Guard A signature matched=") + YesNo(aStatus.guardASignatureMatched) + '.');
             WriteLine(file, "INFO", std::string("Guard A hook installed=") + YesNo(aStatus.guardAHookInstalled) + '.');
             WriteLine(file, "INFO", std::string("Guard B signature matched=") + YesNo(aStatus.guardBSignatureMatched) + '.');
             WriteLine(file, "INFO", std::string("Guard B hook installed=") + YesNo(aStatus.guardBHookInstalled) + '.');
+            WriteLine(file, "INFO", std::string("Guard C signature matched=") + YesNo(aStatus.guardCSignatureMatched) + '.');
+            WriteLine(file, "INFO", std::string("Guard C hook installed=") + YesNo(aStatus.guardCHookInstalled) + '.');
         }
         else
         {
@@ -144,11 +150,13 @@ void MonitorMain(std::stop_token aStopToken, vecg::diag::StartupStatus aStatus) 
 
         std::uint64_t reportedA = 0;
         std::uint64_t reportedB = 0;
+        std::uint64_t reportedC = 0;
 
         const auto reportChanges = [&]()
         {
             const auto currentA = s_guardAHits.load(std::memory_order_acquire);
             const auto currentB = s_guardBHits.load(std::memory_order_acquire);
+            const auto currentC = s_guardCHits.load(std::memory_order_acquire);
 
             if (currentA != reportedA)
             {
@@ -176,10 +184,22 @@ void MonitorMain(std::stop_token aStopToken, vecg::diag::StartupStatus aStatus) 
                 WriteLine(file, "INFO", message);
                 reportedB = currentB;
             }
+
+            if (currentC != reportedC)
+            {
+                const auto badPtr = s_lastGuardCBadPtr.load(std::memory_order_acquire);
+                const auto destPtr = s_lastGuardCDestPtr.load(std::memory_order_acquire);
+
+                const std::string message =
+                    "Guard C redirect detected. Total=" + std::to_string(currentC) +
+                    ", badPtr=" + Hex(badPtr) +
+                    ", destPtr=" + Hex(destPtr) + '.';
+                vecg::diag::Info(message);
+                WriteLine(file, "INFO", message);
+                reportedC = currentC;
+            }
         };
 
-        // Catch a hit that occurred in the narrow window between hook
-        // installation and monitor-thread startup.
         reportChanges();
 
         while (!aStopToken.stop_requested())
@@ -207,9 +227,11 @@ void MonitorMain(std::stop_token aStopToken, vecg::diag::StartupStatus aStatus) 
 
         const auto finalA = s_guardAHits.load(std::memory_order_acquire);
         const auto finalB = s_guardBHits.load(std::memory_order_acquire);
+        const auto finalC = s_guardCHits.load(std::memory_order_acquire);
         WriteLine(file, "INFO", "Diagnostic monitor stopped. Guard A redirects=" +
                                      std::to_string(finalA) + ", Guard B redirects=" +
-                                     std::to_string(finalB) + '.');
+                                     std::to_string(finalB) + ", Guard C redirects=" +
+                                     std::to_string(finalC) + '.');
     }
     catch (...)
     {
@@ -235,10 +257,13 @@ void Initialize(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Logger* aL
     s_logger = aLogger;
     s_guardAHits.store(0, std::memory_order_relaxed);
     s_guardBHits.store(0, std::memory_order_relaxed);
+    s_guardCHits.store(0, std::memory_order_relaxed);
     s_lastGuardBReason.store(0, std::memory_order_relaxed);
     s_lastGuardBObject.store(0, std::memory_order_relaxed);
     s_lastGuardBVtable.store(0, std::memory_order_relaxed);
     s_lastGuardBTarget.store(0, std::memory_order_relaxed);
+    s_lastGuardCBadPtr.store(0, std::memory_order_relaxed);
+    s_lastGuardCDestPtr.store(0, std::memory_order_relaxed);
 }
 
 void Info(std::string_view aMessage) noexcept
@@ -361,6 +386,15 @@ void RecordGuardBHit(GuardBRejectReason aReason,
     SignalMonitor();
 }
 
+void RecordGuardCHit(std::uint64_t aBadPtr,
+                     std::uint64_t aDestPtr) noexcept
+{
+    s_lastGuardCBadPtr.store(aBadPtr, std::memory_order_relaxed);
+    s_lastGuardCDestPtr.store(aDestPtr, std::memory_order_relaxed);
+    s_guardCHits.fetch_add(1, std::memory_order_release);
+    SignalMonitor();
+}
+
 std::uint64_t GuardAHits() noexcept
 {
     return s_guardAHits.load(std::memory_order_acquire);
@@ -369,5 +403,10 @@ std::uint64_t GuardAHits() noexcept
 std::uint64_t GuardBHits() noexcept
 {
     return s_guardBHits.load(std::memory_order_acquire);
+}
+
+std::uint64_t GuardCHits() noexcept
+{
+    return s_guardCHits.load(std::memory_order_acquire);
 }
 } // namespace vecg::diag
